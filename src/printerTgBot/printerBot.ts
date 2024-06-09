@@ -1,4 +1,4 @@
-import TelegramBot, { InlineKeyboardMarkup, Message } from 'node-telegram-bot-api';
+import TelegramBot, { InlineKeyboardMarkup, Message, User } from 'node-telegram-bot-api';
 import Config from '../config.js';
 import { AvailablePrintModes, PrintModeAction, PrinterBotCommand } from './types.js';
 import { logger } from '../logger.js'; // Import the custom logger
@@ -16,7 +16,7 @@ export class PrinterBot {
       { command: 'print', description: 'Print a note, reminder, or task', handler: this.handlePrintCommand.bind(this) },
     ];
 
-    logger.info('PrinterBot initialized');
+    logger.info('Printer Bot initialized');
   }
 
   public start() {
@@ -31,11 +31,13 @@ export class PrinterBot {
   private handleMessage(message: Message) {
     const receivedText = message.text?.toLowerCase();
     const chatId = message.chat.id;
-    const userId = message.from?.id;
+    const user = message.from;
 
-    logger.info(`Received message from chatId: ${chatId}, userId: ${userId}, text: ${receivedText}`);
+    logger.debug(
+      `Received message from chatId: ${chatId}, user: ${user?.username}(${user?.id}), text: ${receivedText}`,
+    );
 
-    if (!receivedText || !userId) {
+    if (!receivedText || !user?.id) {
       this.sendHelperText(message.chat.id);
       return;
     }
@@ -47,19 +49,19 @@ export class PrinterBot {
       return;
     }
 
-    command.handler({ chatId, userId });
+    command.handler({ chatId, user });
   }
 
   private sendHelperText(chatId: number) {
     const commandsText = this.commands.map(({ command, description }) => `• /${command} - ${description}`).join('\n');
     const responseText = `✨ Available Commands ✨\n\n${commandsText}`;
 
-    logger.info(`Sending helper text to chatId: ${chatId}`);
+    logger.debug(`Sending helper text to chatId: ${chatId}`);
     this.tgBot.sendMessage(chatId, responseText);
   }
 
-  private handlePrintCommand({ chatId, userId }: { chatId: number; userId?: number }) {
-    logger.info(`Handling print command for chatId: ${chatId}, userId: ${userId}`);
+  private handlePrintCommand({ chatId, user }: { chatId: number; user: User }) {
+    logger.debug(`Handling print command for chatId: ${chatId}, userId: ${user.id}`);
 
     const printModeActions: PrintModeAction[] = [
       {
@@ -88,11 +90,11 @@ export class PrinterBot {
           const printModeAction = printModeActions.find((item) => item.printMode === query.data);
 
           if (!printModeAction) {
-            logger.error(`Error while reading the print mode chosen by the user ${userId}`);
+            logger.error(`Error while reading the print mode chosen by the user ${user.id}`);
             return;
           }
 
-          printModeAction.action({ chatId, userId });
+          printModeAction.action({ chatId, user });
         });
       })
       .catch((error) => {
@@ -100,12 +102,102 @@ export class PrinterBot {
       });
   }
 
+  private handleReminder({ chatId, user }: { chatId: number; user: User }) {
+    logger.debug(`Handling reminder for chatId: ${chatId}, userId: ${user.id}`);
+
+    this.tgBot.sendMessage(chatId, 'Please enter the date for the reminder (e.g., 08/06/2024):').then(() => {
+      this.tgBot.once('message', (msg) => {
+        const date = this.isDateValid(msg.text) ? msg.text : undefined;
+
+        this.tgBot.sendMessage(chatId, 'Please enter the event to be reminded:').then(() => {
+          this.tgBot.once('message', (msg) => {
+            const event = msg.text;
+
+            if (!event) {
+              this.tgBot.sendMessage(chatId, 'Event cannot be empty. Please enter the note message:');
+              return this.handleReminder({ chatId, user });
+            }
+
+            const output = this.formatOutput({ type: 'reminder', user, dueDate: date, message: event });
+            this.tgBot.sendMessage(chatId, output);
+          });
+        });
+      });
+    });
+  }
+
+  private handleNote({ chatId, user }: { chatId: number; user: User }) {
+    logger.info(`Handling note for chatId: ${chatId}, userId: ${user.id}`);
+    this.tgBot.sendMessage(chatId, 'Please enter the note message:').then(() => {
+      this.tgBot.once('message', (msg) => {
+        const message = msg.text;
+        logger.info(`Received note message: ${message}`);
+
+        if (!message) {
+          this.tgBot.sendMessage(chatId, 'Note message cannot be empty. Please enter the note message:');
+          return this.handleNote({ chatId, user });
+        }
+
+        const output = this.formatOutput({ type: 'note', user, message });
+        this.tgBot.sendMessage(chatId, output);
+      });
+    });
+  }
+
+  private handleTask({ chatId, user }: { chatId: number; user: User }) {
+    logger.info(`Handling task for chatId: ${chatId}, userId: ${user.id}`);
+    this.tgBot.sendMessage(chatId, 'Please enter the task message:').then(() => {
+      this.tgBot.once('message', (msg) => {
+        const message = msg.text;
+        logger.info(`Received task message: ${message}`);
+
+        if (!message) {
+          this.tgBot.sendMessage(chatId, 'Task message cannot be empty. Please enter the note message:');
+          return this.handleNote({ chatId, user });
+        }
+
+        const output = this.formatOutput({ type: 'task', user, message });
+        this.tgBot.sendMessage(chatId, output);
+      });
+    });
+  }
+
+  private formatOutput({
+    type,
+    user,
+    dueDate,
+    message,
+  }: {
+    type: AvailablePrintModes;
+    user: User;
+    dueDate?: string;
+    message: string;
+  }): string {
+    const currentDate = new Date();
+    const formattedDate = `${currentDate.getMonth() + 1}/${currentDate.getDate()}/${currentDate.getFullYear()}`;
+
+    const output = `\`\`\`
+    ${this.capitalizeFirstChar(type)}
+
+    Author: ${user.username}(${user.id})
+    At: ${formattedDate}
+
+    ----------
+
+    ${type === 'task' ? '[_]' : ''} ${message}
+    ${dueDate ? `Due: ${dueDate}` : ''}
+\`\`\``;
+
+    logger.info(`Formatted output: ${output}`);
+    return output;
+  }
+
   private buildUserChoices(printModeActions: PrintModeAction[]): InlineKeyboardMarkup {
     // Dynamically build userChoices from print mode actions
     const userChoices: InlineKeyboardMarkup = {
       inline_keyboard: printModeActions.map(({ printMode }) => [
         {
-          text: printMode.charAt(0).toUpperCase() + printMode.slice(1), // Capitalize first letter
+          text: this.capitalizeFirstChar(printMode),
           callback_data: printMode,
         },
       ]),
@@ -114,73 +206,13 @@ export class PrinterBot {
     return userChoices;
   }
 
-  private handleReminder({ chatId, userId }: { chatId: number; userId?: number }) {
-    logger.info(`Handling reminder for chatId: ${chatId}, userId: ${userId}`);
-    this.tgBot.sendMessage(chatId, 'Please enter the date for the reminder (e.g., 2024-06-08):').then(() => {
-      this.tgBot.once('message', (msg) => {
-        const date = msg.text;
-        logger.info(`Received reminder date: ${date}`);
-
-        this.tgBot.sendMessage(chatId, 'Please enter the reminder message:').then(() => {
-          this.tgBot.once('message', (msg) => {
-            const message = msg.text;
-            logger.info(`Received reminder message: ${message}`);
-
-            const output = this.formatOutput('reminder', userId, date, message);
-            this.tgBot.sendMessage(chatId, output);
-          });
-        });
-      });
-    });
+  private capitalizeFirstChar(text: string) {
+    return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
-  private handleNote({ chatId, userId }: { chatId: number; userId?: number }) {
-    logger.info(`Handling note for chatId: ${chatId}, userId: ${userId}`);
-    this.tgBot.sendMessage(chatId, 'Please enter the note message:').then(() => {
-      this.tgBot.once('message', (msg) => {
-        const message = msg.text;
-        logger.info(`Received note message: ${message}`);
-
-        const output = this.formatOutput('note', userId, undefined, message);
-        this.tgBot.sendMessage(chatId, output);
-      });
-    });
-  }
-
-  private handleTask({ chatId, userId }: { chatId: number; userId?: number }) {
-    logger.info(`Handling task for chatId: ${chatId}, userId: ${userId}`);
-    this.tgBot.sendMessage(chatId, 'Please enter the task message:').then(() => {
-      this.tgBot.once('message', (msg) => {
-        const message = msg.text;
-        logger.info(`Received task message: ${message}`);
-
-        const output = this.formatOutput('task', userId, undefined, message, true);
-        this.tgBot.sendMessage(chatId, output);
-      });
-    });
-  }
-
-  private formatOutput(
-    type: AvailablePrintModes,
-    userId?: number,
-    date?: string,
-    message?: string,
-    isTask: boolean = false,
-  ): string {
-    const user = userId ? `User ID: ${userId}` : '';
-    const timestamp = new Date().toISOString();
-    let output = `Type: ${type}\n${user}\nDate: ${timestamp}\n`;
-
-    if (type === 'reminder' && date) {
-      output += `Reminder Date: ${date}\n`;
-    }
-    if (isTask) {
-      output += `Task: [ ] ${message}\n`;
-    } else {
-      output += `Message: ${message}\n`;
-    }
-
-    logger.info(`Formatted output: ${output}`);
-    return output;
+  private isDateValid(date?: string): boolean {
+    if (!date) return false;
+    const regex = /^\d{2}\/\d{2}\/\d{4}$/;
+    return regex.test(date);
   }
 }
