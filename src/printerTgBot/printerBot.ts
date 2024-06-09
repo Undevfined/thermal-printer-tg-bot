@@ -1,6 +1,6 @@
 import TelegramBot, { InlineKeyboardMarkup, Message, User } from 'node-telegram-bot-api';
 import Config from '../config.js';
-import { AvailablePrintModes, PrintModeAction, PrinterBotCommand } from './types.js';
+import { AvailablePrintModes, InputPrompt, PrintModeAction, PrinterBotCommand } from './types.js';
 import { logger } from '../logger.js'; // Import the custom logger
 
 export class PrinterBot {
@@ -102,77 +102,109 @@ export class PrinterBot {
       });
   }
 
-  private handleReminder({ chatId, user }: { chatId: number; user: User }) {
+  private async handleReminder({ chatId, user }: { chatId: number; user: User }) {
     logger.debug(`Handling reminder for chatId: ${chatId}, userId: ${user.id}`);
 
-    this.tgBot.sendMessage(chatId, 'Please enter the date for the reminder (e.g., 08/06/2024):').then(() => {
-      this.tgBot.once('message', (msg) => {
-        const date = this.isDateValid(msg.text) ? msg.text : undefined;
+    const inputPrompts: InputPrompt[] = [
+      {
+        prompt: 'Please enter the date for the reminder (e.g., 08/06/2024):',
+        validator: this.isDateValid.bind(this),
+        expectedFormat: '08/06/2024',
+      },
+      {
+        prompt: 'Please enter the event to be reminded:',
+      },
+    ];
 
-        this.tgBot.sendMessage(chatId, 'Please enter the event to be reminded:').then(() => {
-          this.tgBot.once('message', (msg) => {
-            const event = msg.text;
+    const userInputs = await this.collectUserInputs({ chatId, inputPrompts });
 
-            if (!event) {
-              this.tgBot.sendMessage(chatId, 'Event cannot be empty. Please enter the note message:');
-              return this.handleReminder({ chatId, user });
-            }
+    const text = `${userInputs[0]}
+Due: ${userInputs[1]}`;
 
-            const output = this.formatOutput({ type: 'reminder', user, dueDate: date, message: event });
-            this.tgBot.sendMessage(chatId, output);
-          });
+    this.tgBot.sendMessage(chatId, this.formatOutput({ user, type: 'reminder', text }));
+  }
+
+  private async handleNote({ chatId, user }: { chatId: number; user: User }) {
+    logger.info(`Handling note for chatId: ${chatId}, userId: ${user.id}`);
+
+    const inputPrompts: InputPrompt[] = [
+      {
+        prompt: 'Please enter the note message:',
+      },
+    ];
+
+    const userInputs = await this.collectUserInputs({ chatId, inputPrompts });
+    const text = userInputs[0];
+
+    this.tgBot.sendMessage(chatId, this.formatOutput({ user, type: 'note', text }));
+  }
+
+  private async handleTask({ chatId, user }: { chatId: number; user: User }) {
+    logger.info(`Handling task for chatId: ${chatId}, userId: ${user.id}`);
+
+    const inputPrompts: InputPrompt[] = [
+      {
+        prompt: 'Please enter the task:',
+      },
+    ];
+
+    const userInputs = await this.collectUserInputs({ chatId, inputPrompts });
+    const text = `[_] ${userInputs[0]}`;
+
+    this.tgBot.sendMessage(chatId, this.formatOutput({ user, type: 'task', text }));
+  }
+
+  private async collectUserInputs({
+    chatId,
+    inputPrompts,
+  }: {
+    chatId: number;
+    inputPrompts: InputPrompt[];
+  }): Promise<string[]> {
+    const inputs: string[] = [];
+
+    for (const inputPrompt of inputPrompts) {
+      let userInput = await this.collectSingleUserInput({ chatId, prompt: inputPrompt.prompt });
+      logger.debug(`Received user input: ${userInput}`);
+
+      while (!userInput) {
+        userInput = await this.collectSingleUserInput({
+          chatId,
+          prompt: 'This input cannot be empty. Please enter it:',
+        });
+      }
+
+      // TODO: Improve this conditional
+      while (!userInput || (inputPrompt.validator && !inputPrompt.validator(userInput))) {
+        userInput = await this.collectSingleUserInput({
+          chatId,
+          prompt: `This input does not follow the expected format (${inputPrompt.expectedFormat}). Please re-enter it:`,
+        });
+      }
+
+      inputs.push(userInput);
+    }
+
+    return inputs;
+  }
+
+  private async collectSingleUserInput({
+    chatId,
+    prompt,
+  }: {
+    chatId: number;
+    prompt: string;
+  }): Promise<string | undefined> {
+    return new Promise<string | undefined>((resolve) => {
+      this.tgBot.sendMessage(chatId, prompt).then(() => {
+        this.tgBot.once('message', (msg) => {
+          resolve(msg.text);
         });
       });
     });
   }
 
-  private handleNote({ chatId, user }: { chatId: number; user: User }) {
-    logger.info(`Handling note for chatId: ${chatId}, userId: ${user.id}`);
-    this.tgBot.sendMessage(chatId, 'Please enter the note message:').then(() => {
-      this.tgBot.once('message', (msg) => {
-        const message = msg.text;
-        logger.info(`Received note message: ${message}`);
-
-        if (!message) {
-          this.tgBot.sendMessage(chatId, 'Note message cannot be empty. Please enter the note message:');
-          return this.handleNote({ chatId, user });
-        }
-
-        const output = this.formatOutput({ type: 'note', user, message });
-        this.tgBot.sendMessage(chatId, output);
-      });
-    });
-  }
-
-  private handleTask({ chatId, user }: { chatId: number; user: User }) {
-    logger.info(`Handling task for chatId: ${chatId}, userId: ${user.id}`);
-    this.tgBot.sendMessage(chatId, 'Please enter the task message:').then(() => {
-      this.tgBot.once('message', (msg) => {
-        const message = msg.text;
-        logger.info(`Received task message: ${message}`);
-
-        if (!message) {
-          this.tgBot.sendMessage(chatId, 'Task message cannot be empty. Please enter the note message:');
-          return this.handleNote({ chatId, user });
-        }
-
-        const output = this.formatOutput({ type: 'task', user, message });
-        this.tgBot.sendMessage(chatId, output);
-      });
-    });
-  }
-
-  private formatOutput({
-    type,
-    user,
-    dueDate,
-    message,
-  }: {
-    type: AvailablePrintModes;
-    user: User;
-    dueDate?: string;
-    message: string;
-  }): string {
+  private formatOutput({ type, user, text }: { type: AvailablePrintModes; user: User; text: string }): string {
     const currentDate = new Date();
     const formattedDate = `${currentDate.getMonth() + 1}/${currentDate.getDate()}/${currentDate.getFullYear()}`;
 
@@ -184,8 +216,7 @@ export class PrinterBot {
 
     ----------
 
-    ${type === 'task' ? '[_]' : ''} ${message}
-    ${dueDate ? `Due: ${dueDate}` : ''}
+    ${text}
 \`\`\``;
 
     logger.info(`Formatted output: ${output}`);

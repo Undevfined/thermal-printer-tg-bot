@@ -16,3 +16,9 @@ export type PrintModeAction = {
   printMode: AvailablePrintModes;
   action: ({ chatId, user }: { chatId: number; user: User }) => void;
 };
+
+export type InputPrompt = {
+  prompt: string;
+  validator?: (inputData?: string) => boolean;
+  expectedFormat?: string;
+};
