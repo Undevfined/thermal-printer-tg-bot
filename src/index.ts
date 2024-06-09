@@ -1,16 +1,7 @@
-import TelegramBot from 'node-telegram-bot-api';
 import Config from './config.js';
+import { PrinterBot } from './printerTgBot/index.js';
 
 const config = Config.getInstance();
+const printerBot = new PrinterBot(config);
 
-const bot = new TelegramBot(config.token, { polling: true });
-
-bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-    const responseText = `Hello from Undevfined, ${msg.from?.username}!`;
-
-    bot.sendMessage(chatId, responseText);
-});
-
-
-console.log('Bot has been started...');
+printerBot.start();
