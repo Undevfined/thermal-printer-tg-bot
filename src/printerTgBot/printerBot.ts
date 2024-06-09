@@ -121,7 +121,7 @@ export class PrinterBot {
     const text = `${userInputs[0]}
 Due: ${userInputs[1]}`;
 
-    this.tgBot.sendMessage(chatId, this.formatOutput({ user, type: 'reminder', text }));
+    this.sendResultToUser({ chatId, text, user, type: 'reminder' });
   }
 
   private async handleNote({ chatId, user }: { chatId: number; user: User }) {
@@ -136,7 +136,7 @@ Due: ${userInputs[1]}`;
     const userInputs = await this.collectUserInputs({ chatId, inputPrompts });
     const text = userInputs[0];
 
-    this.tgBot.sendMessage(chatId, this.formatOutput({ user, type: 'note', text }));
+    this.sendResultToUser({ chatId, text, user, type: 'note' });
   }
 
   private async handleTask({ chatId, user }: { chatId: number; user: User }) {
@@ -149,9 +149,9 @@ Due: ${userInputs[1]}`;
     ];
 
     const userInputs = await this.collectUserInputs({ chatId, inputPrompts });
-    const text = `[_] ${userInputs[0]}`;
+    const text = `[ ] ${userInputs[0]}`;
 
-    this.tgBot.sendMessage(chatId, this.formatOutput({ user, type: 'task', text }));
+    this.sendResultToUser({ chatId, text, user, type: 'task' });
   }
 
   private async collectUserInputs({
@@ -167,18 +167,15 @@ Due: ${userInputs[1]}`;
       let userInput = await this.collectSingleUserInput({ chatId, prompt: inputPrompt.prompt });
       logger.debug(`Received user input: ${userInput}`);
 
-      while (!userInput) {
-        userInput = await this.collectSingleUserInput({
-          chatId,
-          prompt: 'This input cannot be empty. Please enter it:',
-        });
-      }
-
-      // TODO: Improve this conditional
+      // Request again in case of empty or invalid input
       while (!userInput || (inputPrompt.validator && !inputPrompt.validator(userInput))) {
+        const rePrompt = !userInput
+          ? 'This input cannot be empty. Please enter it:'
+          : `This input does not follow the expected format (${inputPrompt.expectedFormat}). Please re-enter it:`;
+
         userInput = await this.collectSingleUserInput({
           chatId,
-          prompt: `This input does not follow the expected format (${inputPrompt.expectedFormat}). Please re-enter it:`,
+          prompt: rePrompt,
         });
       }
 
@@ -186,6 +183,20 @@ Due: ${userInputs[1]}`;
     }
 
     return inputs;
+  }
+
+  private async sendResultToUser({
+    chatId,
+    user,
+    text,
+    type,
+  }: {
+    chatId: number;
+    user: User;
+    text: string;
+    type: AvailablePrintModes;
+  }) {
+    this.tgBot.sendMessage(chatId, this.formatOutput({ user, type, text }), { parse_mode: 'MarkdownV2' });
   }
 
   private async collectSingleUserInput({
@@ -208,16 +219,12 @@ Due: ${userInputs[1]}`;
     const currentDate = new Date();
     const formattedDate = `${currentDate.getMonth() + 1}/${currentDate.getDate()}/${currentDate.getFullYear()}`;
 
-    const output = `\`\`\`
-    ${this.capitalizeFirstChar(type)}
+    const output = `**${this.capitalizeFirstChar(type)}**
 
-    Author: ${user.username}(${user.id})
-    At: ${formattedDate}
+    _Author_: ${user.username}
+    _At_: ${formattedDate}
 
-    ----------
-
-    ${text}
-\`\`\``;
+    ${text}`;
 
     logger.info(`Formatted output: ${output}`);
     return output;
